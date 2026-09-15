@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { 
   BankAccount, 
   Transaction, 
@@ -17,15 +18,12 @@ import {
   INITIAL_CLOUD_BACKUPS 
 } from '../data/initialData';
 
+/**
+ * Standard Cryptographic SHA-256 Hashing
+ * Provides preimage resistance, collision resistance, and tamper-evident proof.
+ */
 export function generateCryptoHash(payload: string): string {
-  let hash = 0;
-  for (let i = 0; i < payload.length; i++) {
-    const char = payload.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
-  }
-  const hex = Math.abs(hash).toString(16).padStart(8, '0');
-  return `sha256_${hex}${Date.now().toString(16).slice(-6)}`;
+  return crypto.createHash('sha256').update(payload).digest('hex');
 }
 
 export class BankingBackendService {
@@ -91,6 +89,13 @@ export class BankingBackendService {
     if (!requiresDualAuth) {
       account.balance += data.amount;
       account.availableBalance += data.amount;
+
+      if (data.amount < 0) {
+        const initiatorUser = this.users.find(u => u.id === data.initiator.id);
+        if (initiatorUser) {
+          initiatorUser.currentMonthSpent = Math.round((initiatorUser.currentMonthSpent + Math.abs(data.amount)) * 100) / 100;
+        }
+      }
     }
 
     this.transactions = [newTx, ...this.transactions];
@@ -139,6 +144,13 @@ export class BankingBackendService {
     if (acc) {
       acc.balance += tx.amount;
       acc.availableBalance += tx.amount;
+    }
+
+    if (tx.amount < 0) {
+      const initiatorUser = this.users.find(u => u.id === tx.initiatedByUserId);
+      if (initiatorUser) {
+        initiatorUser.currentMonthSpent = Math.round((initiatorUser.currentMonthSpent + Math.abs(tx.amount)) * 100) / 100;
+      }
     }
 
     this.addAuditLog({

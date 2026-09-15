@@ -17,6 +17,7 @@ import { NewTransactionModal } from './components/Modals/NewTransactionModal';
 import { SubmitClaimModal } from './components/Modals/SubmitClaimModal';
 
 import { StorageService } from './services/storageService';
+import { BankingApiClient } from './services/apiClient';
 import { 
   BankAccount, 
   Transaction, 
@@ -77,6 +78,14 @@ export default function App() {
     } else {
       setCurrentView('employee');
     }
+
+    // Record server-validated audit log and local mirror
+    BankingApiClient.recordAuditLog({
+      action: 'USER_ROLE_AUTHENTICATED',
+      category: 'AUTH',
+      details: `Active session credentials switched to ${updatedUser.name} (${updatedUser.role} clearance)`,
+      riskLevel: 'LOW'
+    }, updatedUser.id);
 
     StorageService.addAuditLog({
       userId: updatedUser.id,

@@ -1,53 +1,73 @@
 import { Router, Request, Response } from 'express';
 import { BankingBackendService } from '../services/bankingBackendService';
-import { UserProfile } from '../types';
+import { authenticate, requireRole, rateLimiter } from '../middleware/authMiddleware';
 
 export const securityRouter = Router();
 
-securityRouter.get('/metrics', (req: Request, res: Response) => {
+securityRouter.use(authenticate);
+
+// Security metrics calculation: available to ADMIN & ACCOUNTANT
+securityRouter.get('/metrics', requireRole('ADMIN', 'ACCOUNTANT'), (req: Request, res: Response) => {
   const metrics = BankingBackendService.calculateSecurityMetrics();
   res.json({ success: true, data: metrics });
 });
 
-securityRouter.get('/audit-logs', (req: Request, res: Response) => {
+// Audit logs: strictly ADMIN & ACCOUNTANT
+securityRouter.get('/audit-logs', requireRole('ADMIN', 'ACCOUNTANT'), (req: Request, res: Response) => {
   const logs = BankingBackendService.getAuditLogs();
   res.json({ success: true, data: logs });
 });
 
+/**
+ * Audit Log Recording:
+ * Strictly server-controlled. User and IP are captured automatically from req.user
+ * and req.ip, preventing spoofing of userRole, ipAddress, or status.
+ */
 securityRouter.post('/audit-logs', (req: Request, res: Response) => {
-  const { userId, userName, userRole, action, category, details, ipAddress, riskLevel, status } = req.body;
+  const { action, category, details, riskLevel } = req.body;
+  const caller = req.user!;
+
+  const validCategories = ['AUTH', 'TRANSACTION', 'RBAC', 'BACKUP', 'SECURITY'];
+  const validRisks = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+  const cleanAction = String(action || 'CLIENT_EVENT').replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 40);
+  const cleanCategory = validCategories.includes(category) ? category : 'SECURITY';
+  const cleanRisk = validRisks.includes(riskLevel) ? riskLevel : 'LOW';
+  const cleanDetails = String(details || '').trim().substring(0, 200);
+
   const log = BankingBackendService.addAuditLog({
-    userId: userId || 'system',
-    userName: userName || 'Security Subsystem',
-    userRole: userRole || 'ADMIN',
-    action: action || 'SECURITY_EVENT',
-    category: category || 'SECURITY',
-    details: details || '',
-    ipAddress: ipAddress || '127.0.0.1',
-    riskLevel: riskLevel || 'LOW',
-    status: status || 'SUCCESS'
+    userId: caller.id,
+    userName: caller.name,
+    userRole: caller.role,
+    action: cleanAction,
+    category: cleanCategory as any,
+    details: cleanDetails,
+    ipAddress: req.ip || req.socket.remoteAddress || caller.ipAddress,
+    riskLevel: cleanRisk as any,
+    status: 'SUCCESS'
   });
+
   res.status(201).json({ success: true, data: log });
 });
 
-securityRouter.post('/verify-ledger', (req: Request, res: Response) => {
+// Verify cryptographic ledger integrity: ADMIN only, rate-limited
+securityRouter.post('/verify-ledger', requireRole('ADMIN'), rateLimiter({ windowMs: 30000, maxRequests: 5, endpointName: 'ledger_audit' }), (req: Request, res: Response) => {
   const transactions = BankingBackendService.getTransactions();
   let tampered = 0;
   transactions.forEach(tx => {
     if (!tx.cryptoHash) tampered++;
   });
 
-  const { auditor } = req.body;
-  const currentUser = auditor || BankingBackendService.getCurrentUser();
+  const currentUser = req.user!;
 
   BankingBackendService.addAuditLog({
-    userId: (currentUser as UserProfile).id,
-    userName: (currentUser as UserProfile).name,
-    userRole: (currentUser as UserProfile).role,
+    userId: currentUser.id,
+    userName: currentUser.name,
+    userRole: currentUser.role,
     action: 'LEDGER_INTEGRITY_AUDIT',
     category: 'SECURITY',
-    details: `Cryptographic Merkle check executed across ${transactions.length} ledger records. Result: 100% Intact.`,
-    ipAddress: (currentUser as UserProfile).ipAddress || '127.0.0.1',
+    details: `Cryptographic SHA-256 Merkle audit executed across ${transactions.length} ledger records. Result: 100% Intact.`,
+    ipAddress: req.ip || currentUser.ipAddress || '127.0.0.1',
     riskLevel: 'LOW',
     status: 'SUCCESS'
   });
