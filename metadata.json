@@ -1,0 +1,6 @@
+{
+  "name": "Small Business & MNVC Banking System",
+  "description": "Role-based banking, transaction management, interactive financial health analysis, and measurable security with encrypted cloud backups for small businesses and MNVCs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
