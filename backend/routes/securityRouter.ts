@@ -51,11 +51,15 @@ securityRouter.post('/audit-logs', (req: Request, res: Response) => {
 });
 
 // Verify cryptographic ledger integrity: ADMIN only, rate-limited
-securityRouter.post('/verify-ledger', requireRole('ADMIN'), rateLimiter({ windowMs: 30000, maxRequests: 5, endpointName: 'ledger_audit' }), (req: Request, res: Response) => {
+securityRouter.post('/verify-ledger', requireRole('ADMIN'), rateLimiter({ windowMs: 30000, maxRequests: 10, endpointName: 'ledger_audit' }), (req: Request, res: Response) => {
   const transactions = BankingBackendService.getTransactions();
   let tampered = 0;
+  const tamperedRecords: string[] = [];
   transactions.forEach(tx => {
-    if (!tx.cryptoHash) tampered++;
+    if (!tx.cryptoHash || tx.cryptoHash.startsWith('corrupt_') || !/^[0-9a-f]{64}$/i.test(tx.cryptoHash)) {
+      tampered++;
+      tamperedRecords.push(tx.referenceNumber);
+    }
   });
 
   const currentUser = req.user!;
@@ -66,10 +70,12 @@ securityRouter.post('/verify-ledger', requireRole('ADMIN'), rateLimiter({ window
     userRole: currentUser.role,
     action: 'LEDGER_INTEGRITY_AUDIT',
     category: 'SECURITY',
-    details: `Cryptographic SHA-256 Merkle audit executed across ${transactions.length} ledger records. Result: 100% Intact.`,
+    details: tampered === 0
+      ? `Cryptographic SHA-256 Merkle audit executed across ${transactions.length} ledger records. Result: 100% Intact.`
+      : `CRITICAL ALERT: Tampered records detected (${tamperedRecords.join(', ')}). Cryptographic chain altered!`,
     ipAddress: req.ip || currentUser.ipAddress || '127.0.0.1',
-    riskLevel: 'LOW',
-    status: 'SUCCESS'
+    riskLevel: tampered === 0 ? 'LOW' : 'CRITICAL',
+    status: tampered === 0 ? 'SUCCESS' : 'DENIED'
   });
 
   res.json({
@@ -77,8 +83,16 @@ securityRouter.post('/verify-ledger', requireRole('ADMIN'), rateLimiter({ window
     data: {
       verified: tampered === 0,
       tamperedCount: tampered,
+      tamperedRecords,
       recordCount: transactions.length,
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
     }
   });
 });
+
+// Toggle/Alternate simulated ledger tamper error for testing/demonstration
+securityRouter.post('/toggle-tamper-simulation', requireRole('ADMIN'), (req: Request, res: Response) => {
+  const result = BankingBackendService.toggleTamperSimulation(req.user!);
+  res.json({ success: true, data: result });
+});
+

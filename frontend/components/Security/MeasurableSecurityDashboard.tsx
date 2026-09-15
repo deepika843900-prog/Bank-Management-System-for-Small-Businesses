@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { 
   ShieldCheck, Lock, Key, ShieldAlert, FileText, CheckCircle2, 
   AlertTriangle, RefreshCw, Smartphone, Globe, CloudCheck, HardDrive, 
-  Eye, Terminal, Database, Server
+  Eye, Terminal, Database, Server, X, AlertCircle, Wrench
 } from 'lucide-react';
 import { SecurityPostureMetrics, AuditLogEntry, UserProfile } from '../../types';
 import { StorageService } from '../../services/storageService';
@@ -26,29 +26,69 @@ export function MeasurableSecurityDashboard({
   onOpenBackups
 }: Props) {
   const [verifyingLedger, setVerifyingLedger] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<{ verified: boolean; timestamp: string } | null>(null);
+  const [verificationResult, setVerificationResult] = useState<{ 
+    verified: boolean; 
+    tamperedCount: number; 
+    tamperedRecords?: string[]; 
+    timestamp: string; 
+  } | null>(null);
   const [selectedRiskFilter, setSelectedRiskFilter] = useState<string>('ALL');
   const [searchLogQuery, setSearchLogQuery] = useState('');
+  const [filterErrorsOnly, setFilterErrorsOnly] = useState(false);
+  const [togglingTamper, setTogglingTamper] = useState(false);
+  const [tamperedState, setTamperedState] = useState(() => 
+    StorageService.getTransactions().some(t => t.cryptoHash?.startsWith('corrupt_') || t.description?.includes('[SIMULATED TAMPER CORRUPTION]'))
+  );
 
   const handleVerifyLedger = async () => {
     setVerifyingLedger(true);
     try {
       const apiResult = await BankingApiClient.verifyLedger(currentUser.id);
       const localResult = StorageService.verifyLedgerIntegrity();
+      const verified = (apiResult ? apiResult.verified : true) && localResult.verified;
+      const tamperedCount = (apiResult?.tamperedCount || 0) + (localResult.tamperedCount || 0);
+      const tamperedRecords = [...(apiResult?.tamperedRecords || []), ...(localResult.tamperedRecords || [])];
       setVerificationResult({ 
-        verified: (apiResult?.verified ?? true) && localResult.verified, 
+        verified, 
+        tamperedCount,
+        tamperedRecords: Array.from(new Set(tamperedRecords)),
         timestamp: apiResult?.timestamp || localResult.timestamp 
       });
     } catch {
       const localResult = StorageService.verifyLedgerIntegrity();
-      setVerificationResult({ verified: localResult.verified, timestamp: localResult.timestamp });
+      setVerificationResult({ 
+        verified: localResult.verified, 
+        tamperedCount: localResult.tamperedCount,
+        tamperedRecords: localResult.tamperedRecords,
+        timestamp: localResult.timestamp 
+      });
     } finally {
       setVerifyingLedger(false);
       onRefreshData();
     }
   };
 
+  const handleToggleTamperSimulation = async () => {
+    setTogglingTamper(true);
+    try {
+      await BankingApiClient.toggleTamperSimulation(currentUser.id);
+    } catch {
+      // Local fallback
+    }
+    const local = StorageService.toggleTamperSimulation();
+    setTamperedState(local.isTampered);
+    setVerificationResult(null);
+    onRefreshData();
+    setTogglingTamper(false);
+  };
+
+  const errorLogsCount = auditLogs.filter(l => l.status === 'DENIED' || l.riskLevel === 'CRITICAL' || l.riskLevel === 'HIGH').length;
+
   const filteredLogs = auditLogs.filter(log => {
+    if (filterErrorsOnly) {
+      const isError = log.status === 'DENIED' || log.riskLevel === 'CRITICAL' || log.riskLevel === 'HIGH';
+      if (!isError) return false;
+    }
     const matchesRisk = selectedRiskFilter === 'ALL' || log.riskLevel === selectedRiskFilter;
     const matchesSearch = 
       log.action.toLowerCase().includes(searchLogQuery.toLowerCase()) ||
@@ -64,19 +104,20 @@ export function MeasurableSecurityDashboard({
       <div className="bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/50 border border-slate-800 rounded-xl p-6 shadow-sm">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="flex items-start gap-4">
-            <div className="relative flex items-center justify-center w-20 h-20 rounded-2xl bg-slate-800 border-2 border-emerald-500/80 shadow-lg shadow-emerald-500/10 flex-shrink-0">
-              <span className="text-3xl font-extrabold font-mono text-emerald-400">
+            <div className={`relative flex items-center justify-center w-20 h-20 rounded-2xl bg-slate-800 border-2 ${tamperedState ? 'border-red-500/80 shadow-lg shadow-red-500/20' : 'border-emerald-500/80 shadow-lg shadow-emerald-500/10'} flex-shrink-0 transition-colors`}>
+              <span className={`text-3xl font-extrabold font-mono ${tamperedState ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
                 {metrics.overallScore}
               </span>
-              <span className="absolute -bottom-2 text-[10px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded-full uppercase">
-                Bank Grade
+              <span className={`absolute -bottom-2 text-[10px] font-semibold ${tamperedState ? 'bg-red-950 text-red-300 border-red-800' : 'bg-emerald-950 text-emerald-300 border-emerald-800'} border px-2 py-0.5 rounded-full uppercase`}>
+                {tamperedState ? 'Alert' : 'Bank Grade'}
               </span>
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-xl font-bold text-white">Measurable Security Posture Score</h2>
-                <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
-                  <CheckCircle2 className="w-3 h-3" /> NIST CSF Compliant
+                <span className={`inline-flex items-center gap-1 text-xs ${tamperedState ? 'bg-red-500/10 text-red-400 border-red-500/30' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'} border px-2 py-0.5 rounded-full font-medium`}>
+                  {tamperedState ? <AlertTriangle className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />}
+                  {tamperedState ? 'Integrity Degraded (Drill Active)' : 'NIST CSF Compliant'}
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1 max-w-2xl leading-relaxed">
@@ -86,6 +127,18 @@ export function MeasurableSecurityDashboard({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleToggleTamperSimulation}
+              disabled={togglingTamper}
+              className={`flex items-center gap-2 text-xs font-semibold px-3.5 py-2.5 rounded-lg border transition shadow-sm ${
+                tamperedState 
+                  ? 'bg-red-950/90 border-red-700 text-red-200 hover:bg-red-900' 
+                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+              }`}
+            >
+              <ShieldAlert className={`w-3.5 h-3.5 ${tamperedState ? 'text-red-400 animate-pulse' : 'text-amber-400'}`} />
+              {tamperedState ? 'Alternate State: Clear Ledger Error' : 'Alternate State: Inject Simulated Ledger Error'}
+            </button>
             <button
               onClick={handleVerifyLedger}
               disabled={verifyingLedger}
@@ -104,22 +157,55 @@ export function MeasurableSecurityDashboard({
           </div>
         </div>
 
-        {/* Verification Alert Banner if clicked */}
+        {/* Verification Alert Banner */}
         {verificationResult && (
-          <div className="mt-4 p-3 bg-emerald-950/70 border border-emerald-800/80 rounded-lg flex items-center justify-between text-xs text-emerald-300">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-              <span>
-                <strong>Cryptographic Audit Passed:</strong> All transaction ledger blocks validated against SHA-256 hash chains. 0 alterations detected. Verified at {verificationResult.timestamp}.
-              </span>
+          verificationResult.verified ? (
+            <div className="mt-4 p-4 bg-emerald-950/80 border border-emerald-800/80 rounded-xl flex items-start justify-between text-xs text-emerald-300">
+              <div className="flex items-start gap-2.5">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <strong className="block font-semibold text-white">Cryptographic Audit Passed (SHA-256 Chain 100% Intact)</strong>
+                  <span>
+                    All transaction ledger blocks validated against SHA-256 hash chains. 0 alterations detected across ledger history. Verified at {verificationResult.timestamp}.
+                  </span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setVerificationResult(null)}
+                className="text-emerald-400 hover:text-white underline text-[11px] ml-4"
+              >
+                Dismiss
+              </button>
             </div>
-            <button 
-              onClick={() => setVerificationResult(null)}
-              className="text-emerald-400 hover:text-white underline text-[11px] ml-4"
-            >
-              Dismiss
-            </button>
-          </div>
+          ) : (
+            <div className="mt-4 p-4 bg-red-950/90 border border-red-800 rounded-xl flex items-start justify-between text-xs text-red-200 shadow-xl shadow-red-950/60">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5 animate-pulse" />
+                <div className="space-y-1.5">
+                  <strong className="block font-bold text-white text-sm">SECURITY ALERT: Cryptographic Ledger Chain Corrupted!</strong>
+                  <p className="text-red-300 leading-relaxed">
+                    Detected {verificationResult.tamperedCount} tampered record(s) with mismatched SHA-256 cryptographic checksums
+                    {verificationResult.tamperedRecords && verificationResult.tamperedRecords.length > 0 && ` (${verificationResult.tamperedRecords.join(', ')})`}.
+                    The blockchain-grade ledger detected unauthorized record modification.
+                  </p>
+                  <div className="pt-1 flex items-center gap-3">
+                    <button
+                      onClick={handleToggleTamperSimulation}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-900 hover:bg-red-800 text-white font-semibold rounded-lg text-[11px] transition shadow-sm"
+                    >
+                      <Wrench className="w-3.5 h-3.5" /> Alternate State / Auto-Heal Ledger
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setVerificationResult(null)}
+                className="text-red-400 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )
         )}
 
         {/* 6 Measurable Security Pillars */}
@@ -311,12 +397,23 @@ export function MeasurableSecurityDashboard({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setFilterErrorsOnly(!filterErrorsOnly)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 border ${
+                filterErrorsOnly 
+                  ? 'bg-red-950/90 border-red-700 text-red-200 shadow-sm' 
+                  : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <AlertTriangle className={`w-3.5 h-3.5 ${filterErrorsOnly ? 'text-red-400' : 'text-amber-400'}`} />
+              <span>{filterErrorsOnly ? 'Alternate: Show All Logs' : `Alternate: Errors Only (${errorLogsCount})`}</span>
+            </button>
             <input 
               type="text"
               placeholder="Search audit trail..."
               value={searchLogQuery}
               onChange={(e) => setSearchLogQuery(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-48"
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-44"
             />
             <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs">
               {(['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const).map(risk => (
@@ -338,45 +435,69 @@ export function MeasurableSecurityDashboard({
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-800 text-slate-400 text-[11px]">
-                <th className="pb-2 font-medium">Timestamp (UTC)</th>
-                <th className="pb-2 font-medium">Principal User</th>
-                <th className="pb-2 font-medium">Action Event</th>
-                <th className="pb-2 font-medium">Details</th>
-                <th className="pb-2 font-medium">Risk Level</th>
-                <th className="pb-2 font-medium">Status</th>
+                <th className="pb-2 font-medium px-2">Timestamp (UTC)</th>
+                <th className="pb-2 font-medium px-2">Principal User</th>
+                <th className="pb-2 font-medium px-2">Action Event</th>
+                <th className="pb-2 font-medium px-2">Details</th>
+                <th className="pb-2 font-medium px-2">Risk Level</th>
+                <th className="pb-2 font-medium px-2">Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/50">
-              {filteredLogs.map(log => (
-                <tr key={log.id} className="hover:bg-slate-800/20 transition">
-                  <td className="py-2.5 font-mono text-[11px] text-slate-400 whitespace-nowrap">{log.timestamp}</td>
-                  <td className="py-2.5 whitespace-nowrap">
-                    <span className="font-medium text-slate-200">{log.userName}</span>
-                    <span className="block text-[10px] text-slate-500">{log.userRole}</span>
-                  </td>
-                  <td className="py-2.5 font-mono text-[11px] text-indigo-300">{log.action}</td>
-                  <td className="py-2.5 text-slate-300 max-w-md">{log.details}</td>
-                  <td className="py-2.5 whitespace-nowrap">
-                    <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      log.riskLevel === 'CRITICAL' || log.riskLevel === 'HIGH' ? 'bg-red-950/80 text-red-400 border border-red-800/60' :
-                      log.riskLevel === 'MEDIUM' ? 'bg-amber-950/80 text-amber-400 border border-amber-800/60' :
-                      'bg-slate-800/80 text-slate-300 border border-slate-700'
-                    }`}>
-                      {log.riskLevel}
-                    </span>
-                  </td>
-                  <td className="py-2.5 whitespace-nowrap">
-                    <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${
-                      log.status === 'SUCCESS' ? 'text-emerald-400' :
-                      log.status === 'DENIED' ? 'text-red-400 font-semibold' : 'text-amber-400'
-                    }`}>
-                      {log.status === 'SUCCESS' && <CheckCircle2 className="w-3 h-3" />}
-                      {log.status === 'DENIED' && <AlertTriangle className="w-3 h-3" />}
-                      {log.status}
-                    </span>
+            <tbody className="divide-y divide-slate-800/40">
+              {filteredLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-slate-500 text-xs">
+                    {filterErrorsOnly 
+                      ? 'No security error or denied events found in current audit window.' 
+                      : 'No audit records match the selected filter criteria.'}
                   </td>
                 </tr>
-              ))}
+              ) : (
+                filteredLogs.map((log, index) => {
+                  const isError = log.status === 'DENIED' || log.riskLevel === 'CRITICAL' || log.riskLevel === 'HIGH';
+                  return (
+                    <tr 
+                      key={log.id} 
+                      className={`transition ${
+                        isError
+                          ? index % 2 === 0
+                            ? 'bg-red-950/35 border-l-2 border-red-500 hover:bg-red-900/30'
+                            : 'bg-red-950/20 border-l-2 border-red-500/80 hover:bg-red-900/25'
+                          : index % 2 === 0
+                            ? 'bg-slate-900/50 hover:bg-slate-800/30'
+                            : 'bg-slate-950/40 hover:bg-slate-800/20'
+                      }`}
+                    >
+                      <td className="py-2.5 px-2 font-mono text-[11px] text-slate-400 whitespace-nowrap">{log.timestamp}</td>
+                      <td className="py-2.5 px-2 whitespace-nowrap">
+                        <span className="font-medium text-slate-200">{log.userName}</span>
+                        <span className="block text-[10px] text-slate-500">{log.userRole}</span>
+                      </td>
+                      <td className="py-2.5 px-2 font-mono text-[11px] text-indigo-300">{log.action}</td>
+                      <td className="py-2.5 px-2 text-slate-300 max-w-md">{log.details}</td>
+                      <td className="py-2.5 px-2 whitespace-nowrap">
+                        <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
+                          log.riskLevel === 'CRITICAL' || log.riskLevel === 'HIGH' ? 'bg-red-950/80 text-red-400 border border-red-800/60' :
+                          log.riskLevel === 'MEDIUM' ? 'bg-amber-950/80 text-amber-400 border border-amber-800/60' :
+                          'bg-slate-800/80 text-slate-300 border border-slate-700'
+                        }`}>
+                          {log.riskLevel}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-2 whitespace-nowrap">
+                        <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${
+                          log.status === 'SUCCESS' ? 'text-emerald-400' :
+                          log.status === 'DENIED' ? 'text-red-400 font-semibold' : 'text-amber-400'
+                        }`}>
+                          {log.status === 'SUCCESS' && <CheckCircle2 className="w-3 h-3" />}
+                          {log.status === 'DENIED' && <AlertTriangle className="w-3 h-3" />}
+                          {log.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

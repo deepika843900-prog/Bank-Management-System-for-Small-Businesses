@@ -209,9 +209,24 @@ export class BankingApiClient {
     }
   }
 
-  static async verifyLedger(userId?: string): Promise<{ verified: boolean; tamperedCount: number; recordCount: number; timestamp: string } | null> {
+  static async verifyLedger(userId?: string): Promise<{ verified: boolean; tamperedCount: number; tamperedRecords?: string[]; recordCount: number; timestamp: string } | null> {
     try {
       const res = await fetch(`${this.baseUrl}/security/verify-ledger`, {
+        method: 'POST',
+        headers: this.getHeaders(userId),
+        body: JSON.stringify({})
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.data;
+    } catch {
+      return null;
+    }
+  }
+
+  static async toggleTamperSimulation(userId?: string): Promise<{ isTampered: boolean; tamperedCount: number; affectedRecord?: string } | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/security/toggle-tamper-simulation`, {
         method: 'POST',
         headers: this.getHeaders(userId),
         body: JSON.stringify({})

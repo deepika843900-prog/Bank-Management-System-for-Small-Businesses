@@ -359,6 +359,59 @@ export class BankingBackendService {
     return newSnapshot;
   }
 
+  // Toggle/Alternate simulated ledger tamper error for testing/demonstration
+  static toggleTamperSimulation(user: UserProfile): { isTampered: boolean; tamperedCount: number; affectedRecord?: string } {
+    if (this.transactions.length === 0) return { isTampered: false, tamperedCount: 0 };
+
+    const hasTamper = this.transactions.some(t => t.cryptoHash?.startsWith('corrupt_') || t.description?.includes('[SIMULATED TAMPER CORRUPTION]'));
+
+    if (hasTamper) {
+      this.transactions = this.transactions.map(t => {
+        if (t.cryptoHash?.startsWith('corrupt_') || t.description?.includes('[SIMULATED TAMPER CORRUPTION]')) {
+          const cleanDesc = t.description.replace(' [SIMULATED TAMPER CORRUPTION]', '');
+          return {
+            ...t,
+            description: cleanDesc,
+            cryptoHash: generateCryptoHash(`${t.id}-${t.accountId}-${t.amount}-${t.timestamp}`)
+          };
+        }
+        return t;
+      });
+
+      this.addAuditLog({
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        action: 'LEDGER_TAMPER_RESTORED',
+        category: 'SECURITY',
+        details: 'Simulated ledger tamper cleared. Cryptographic Merkle chain restored to 100% verified state.',
+        ipAddress: user.ipAddress,
+        riskLevel: 'LOW',
+        status: 'SUCCESS'
+      });
+
+      return { isTampered: false, tamperedCount: 0 };
+    } else {
+      const targetTx = this.transactions[0];
+      targetTx.description = `${targetTx.description} [SIMULATED TAMPER CORRUPTION]`;
+      targetTx.cryptoHash = 'corrupt_tampered_hash_invalid_checksum_00000000000000000000000000';
+
+      this.addAuditLog({
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        action: 'SECURITY_TAMPER_INJECTED',
+        category: 'SECURITY',
+        details: `Simulated SHA-256 hash mismatch error injected on record ${targetTx.referenceNumber} for red-team audit drill.`,
+        ipAddress: user.ipAddress,
+        riskLevel: 'CRITICAL',
+        status: 'DENIED'
+      });
+
+      return { isTampered: true, tamperedCount: 1, affectedRecord: targetTx.referenceNumber };
+    }
+  }
+
   // Security Posture Metrics
   static calculateSecurityMetrics(): SecurityPostureMetrics {
     const users = this.users;

@@ -469,13 +469,79 @@ export class StorageService {
     return newSnapshot;
   }
 
-  // Verify Ledger Hash Integrity (Tamper test)
-  static verifyLedgerIntegrity(): { verified: boolean; tamperedCount: number; timestamp: string } {
+  // Toggle / Alternate simulated ledger tamper error for testing and red-team audits
+  static toggleTamperSimulation(): { isTampered: boolean; tamperedCount: number; affectedRecord?: string } {
     const transactions = this.getTransactions();
-    // Simulate verification
+    if (transactions.length === 0) return { isTampered: false, tamperedCount: 0 };
+
+    const hasTamper = transactions.some(t => t.cryptoHash?.startsWith('corrupt_') || t.description?.includes('[SIMULATED TAMPER CORRUPTION]'));
+
+    if (hasTamper) {
+      const restored = transactions.map(t => {
+        if (t.cryptoHash?.startsWith('corrupt_') || t.description?.includes('[SIMULATED TAMPER CORRUPTION]')) {
+          const cleanDesc = t.description.replace(' [SIMULATED TAMPER CORRUPTION]', '');
+          return {
+            ...t,
+            description: cleanDesc,
+            cryptoHash: 'a4f91b82c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0'
+          };
+        }
+        return t;
+      });
+      this.saveTransactions(restored);
+
+      const user = this.getCurrentUser();
+      this.addAuditLog({
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        action: 'LEDGER_TAMPER_RESTORED',
+        category: 'SECURITY',
+        details: 'Simulated ledger tamper cleared. Cryptographic Merkle chain restored to 100% verified state.',
+        ipAddress: user.ipAddress,
+        riskLevel: 'LOW',
+        status: 'SUCCESS'
+      });
+
+      return { isTampered: false, tamperedCount: 0 };
+    } else {
+      const tampered = [...transactions];
+      const target = tampered[0];
+      tampered[0] = {
+        ...target,
+        description: `${target.description} [SIMULATED TAMPER CORRUPTION]`,
+        cryptoHash: 'corrupt_tampered_hash_invalid_checksum_00000000000000000000000000'
+      };
+      this.saveTransactions(tampered);
+
+      const user = this.getCurrentUser();
+      this.addAuditLog({
+        userId: user.id,
+        userName: user.name,
+        userRole: user.role,
+        action: 'SECURITY_TAMPER_INJECTED',
+        category: 'SECURITY',
+        details: `Simulated SHA-256 hash mismatch error injected on record ${target.referenceNumber} for red-team audit drill.`,
+        ipAddress: user.ipAddress,
+        riskLevel: 'CRITICAL',
+        status: 'DENIED'
+      });
+
+      return { isTampered: true, tamperedCount: 1, affectedRecord: target.referenceNumber };
+    }
+  }
+
+  // Verify Ledger Hash Integrity (Tamper test)
+  static verifyLedgerIntegrity(): { verified: boolean; tamperedCount: number; tamperedRecords: string[]; timestamp: string } {
+    const transactions = this.getTransactions();
     let tampered = 0;
+    const tamperedRecords: string[] = [];
+
     transactions.forEach(tx => {
-      if (!tx.cryptoHash) tampered++;
+      if (!tx.cryptoHash || tx.cryptoHash.startsWith('corrupt_') || !/^[0-9a-f]{64}$/i.test(tx.cryptoHash)) {
+        tampered++;
+        tamperedRecords.push(tx.referenceNumber);
+      }
     });
 
     const user = this.getCurrentUser();
@@ -485,15 +551,18 @@ export class StorageService {
       userRole: user.role,
       action: 'LEDGER_INTEGRITY_AUDIT',
       category: 'SECURITY',
-      details: `Cryptographic Merkle check executed across ${transactions.length} ledger records. Result: 100% Intact.`,
+      details: tampered === 0
+        ? `Cryptographic Merkle check executed across ${transactions.length} ledger records. Result: 100% Intact.`
+        : `CRITICAL ALERT: Tampered records detected (${tamperedRecords.join(', ')}). Merkle chain broken!`,
       ipAddress: user.ipAddress,
-      riskLevel: 'LOW',
-      status: 'SUCCESS'
+      riskLevel: tampered === 0 ? 'LOW' : 'CRITICAL',
+      status: tampered === 0 ? 'SUCCESS' : 'DENIED'
     });
 
     return {
       verified: tampered === 0,
       tamperedCount: tampered,
+      tamperedRecords,
       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19)
     };
   }
@@ -506,7 +575,11 @@ export class StorageService {
     const encryptionScore = 98; // AES-256-GCM active
     const rbacIsolationScore = 99; // 0 leaks
     const dualControlScore = 95; // > $10k enforced
-    const auditTrailScore = 98; // Immutable append-only
+
+    // Check if ledger has tampered records
+    const transactions = this.getTransactions();
+    const hasTamper = transactions.some(t => t.cryptoHash?.startsWith('corrupt_') || !/^[0-9a-f]{64}$/i.test(t.cryptoHash || ''));
+    const auditTrailScore = hasTamper ? 45 : 98;
     const backupReliabilityScore = 97; // Daily automated snapshots
 
     const overallScore = Math.round(
